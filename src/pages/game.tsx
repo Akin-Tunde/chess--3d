@@ -6,22 +6,27 @@ import { Board3D } from '@/components/chess/board3d';
 import { MoveHistory } from '@/components/chess/history';
 import { EvalBar } from '@/components/chess/eval-bar';
 import { PlayerCard } from '@/components/chess/player-card';
-import { useChessGame } from '@/hooks/use-chess-game';
+import { useChessGame, GameMode } from '@/hooks/use-chess-game';
 import { useGameClock } from '@/hooks/use-clock';
 import { AIDifficulty } from '@/lib/chess-ai';
 import { playGameEndSound } from '@/lib/sounds';
 import { Chess } from 'chess.js';
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  Dialog, DialogContent, DialogDescription,
+  DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 
 const PIECE_VALUES: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9 };
 const INITIAL_COUNTS: Record<string, number> = { p: 8, n: 2, b: 2, r: 2, q: 1 };
+
+const DIFF_LABEL: Record<AIDifficulty, string> = { easy: 'Beginner', medium: 'Tactician', hard: 'Master' };
+
+const SPEED_LABELS: Record<number, { label: string; icon: string }> = {
+  2000: { label: 'Slow',   icon: '🐢' },
+  700:  { label: 'Normal', icon: '⚡' },
+  250:  { label: 'Fast',   icon: '🔥' },
+  60:   { label: 'Blitz',  icon: '💨' },
+};
 
 function getCapturedPieces(chess: Chess) {
   const current: Record<string, Record<string, number>> = {
@@ -34,7 +39,6 @@ function getCapturedPieces(chess: Chess) {
       current[piece.color][piece.type]++;
     })
   );
-
   const whiteCaptured: string[] = [];
   const blackCaptured: string[] = [];
   Object.entries(INITIAL_COUNTS).forEach(([type, count]) => {
@@ -43,11 +47,9 @@ function getCapturedPieces(chess: Chess) {
     const missingW = count - (current.w[type] ?? 0);
     for (let i = 0; i < missingW; i++) blackCaptured.push(type);
   });
-
   const whiteAdv =
     whiteCaptured.reduce((a, p) => a + (PIECE_VALUES[p] ?? 0), 0) -
     blackCaptured.reduce((a, p) => a + (PIECE_VALUES[p] ?? 0), 0);
-
   return { whiteCaptured, blackCaptured, whiteAdv };
 }
 
@@ -55,30 +57,33 @@ export default function Game() {
   const [, setLocation] = useLocation();
   const search = useSearch();
   const sp = new URLSearchParams(search);
-  const initialMode = (sp.get('mode') as 'ai' | 'local') || 'ai';
-  const initialDiff = (sp.get('diff') as AIDifficulty) || 'medium';
-  const initialTime = parseInt(sp.get('time') || '0', 10);
+  const initialMode  = (sp.get('mode')  as GameMode)      || 'ai';
+  const initialDiff  = (sp.get('diff')  as AIDifficulty)  || 'medium';
+  const initialDiff2 = (sp.get('diff2') as AIDifficulty)  || 'medium';
+  const initialSpeed = parseInt(sp.get('speed') || '700', 10);
+  const initialTime  = parseInt(sp.get('time')  || '0',   10);
+
+  const [moveSpeed, setMoveSpeed] = useState(initialSpeed);
 
   const {
-    chess,
-    fen,
-    history,
-    lastMove,
-    gameStatus,
-    openingName,
-    makeMove,
-    resetGame,
-    undoMove,
-    isThinking,
-    mode,
-    playerColor,
-  } = useChessGame(initialMode, initialDiff);
+    chess, fen, history, lastMove, gameStatus, openingName,
+    makeMove, resetGame, undoMove, isThinking,
+    isPaused, setIsPaused,
+    mode, playerColor,
+  } = useChessGame({
+    initialMode,
+    difficulty:  initialDiff,
+    difficulty2: initialDiff2,
+    moveDelay:   moveSpeed,
+  });
 
-  const [flipped, setFlipped] = useState(initialMode === 'ai' && playerColor === 'b');
-  const [gameOver, setGameOver] = useState(false);
-  const [gameResult, setGameResult] = useState('');
-  const [showResign, setShowResign] = useState(false);
-  const [endSounded, setEndSounded] = useState(false);
+  const isAiVsAi = mode === 'aivai';
+  const [flipped, setFlipped]         = useState(initialMode === 'ai' && playerColor === 'b');
+  const [gameOver, setGameOver]       = useState(false);
+  const [gameResult, setGameResult]   = useState('');
+  const [showResign, setShowResign]   = useState(false);
+  const [endSounded, setEndSounded]   = useState(false);
+  const [autoFlip, setAutoFlip]       = useState(isAiVsAi);
 
   const gameIsOver = chess.isGameOver() || gameOver;
 
@@ -125,10 +130,21 @@ export default function Game() {
     [fen]
   );
 
-  const isPlayerTurn = mode === 'local' || chess.turn() === playerColor;
+  // Auto-flip board in AI vs AI mode after each move
+  useEffect(() => {
+    if (isAiVsAi && autoFlip && history.length > 0) {
+      setFlipped(chess.turn() === 'b');
+    }
+  }, [history.length]);
 
-  const whiteName = mode === 'ai' ? (playerColor === 'w' ? 'You' : 'AI') : 'White';
-  const blackName = mode === 'ai' ? (playerColor === 'b' ? 'You' : 'AI') : 'Black';
+  const isPlayerTurn = isAiVsAi ? false : (mode === 'local' || chess.turn() === playerColor);
+
+  const whiteName = isAiVsAi
+    ? `AI · ${DIFF_LABEL[initialDiff]}`
+    : mode === 'ai' ? (playerColor === 'w' ? 'You' : 'AI') : 'White';
+  const blackName = isAiVsAi
+    ? `AI · ${DIFF_LABEL[initialDiff2]}`
+    : mode === 'ai' ? (playerColor === 'b' ? 'You' : 'AI') : 'Black';
 
   const topPlayer = flipped
     ? { color: 'w' as const, name: whiteName, captured: whiteCaptured, adv: Math.max(0, whiteAdv), time: whiteTime, active: chess.turn() === 'w' }
@@ -144,6 +160,13 @@ export default function Game() {
     setGameOver(false);
     setGameResult('');
     setEndSounded(false);
+  };
+
+  const speedInfo = SPEED_LABELS[moveSpeed] ?? { label: 'Normal', icon: '⚡' };
+  const SPEED_CYCLE = [2000, 700, 250, 60];
+  const cycleSpeed = () => {
+    const idx = SPEED_CYCLE.indexOf(moveSpeed);
+    setMoveSpeed(SPEED_CYCLE[(idx + 1) % SPEED_CYCLE.length]);
   };
 
   return (
@@ -163,46 +186,64 @@ export default function Game() {
             ← Menu
           </Button>
 
-          {/* Centre: opening name or AI thinking dots */}
-          <div className="flex-1 flex justify-center px-4">
+          {/* Centre: spectator badge OR opening name OR AI thinking dots */}
+          <div className="flex-1 flex justify-center items-center gap-2 px-4">
+            {isAiVsAi && (
+              <span className="text-[10px] font-bold tracking-[0.3em] uppercase px-2.5 py-1 rounded-full"
+                style={{ background: 'rgba(212,175,55,0.10)', border: '1px solid rgba(212,175,55,0.25)', color: 'hsl(38 92% 55%)' }}>
+                👁 Spectating
+              </span>
+            )}
             <AnimatePresence mode="wait">
-              {isThinking ? (
-                <motion.div
-                  key="thinking"
-                  initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                  className="flex items-center gap-1.5 text-sm text-muted-foreground"
-                >
+              {isThinking && !isPaused ? (
+                <motion.div key="thinking" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                  className="flex items-center gap-1.5 text-sm text-muted-foreground">
                   {[0, 0.15, 0.3].map((delay, i) => (
-                    <motion.span
-                      key={i}
-                      className="w-1.5 h-1.5 rounded-full bg-primary block"
+                    <motion.span key={i} className="w-1.5 h-1.5 rounded-full bg-primary block"
                       animate={{ opacity: [0.3, 1, 0.3], y: [0, -3, 0] }}
-                      transition={{ repeat: Infinity, duration: 0.9, delay }}
-                    />
+                      transition={{ repeat: Infinity, duration: 0.9, delay }} />
                   ))}
-                  <span className="ml-1.5 text-xs tracking-wider">AI thinking</span>
+                  <span className="ml-1.5 text-xs tracking-wider">{isAiVsAi ? 'AI playing…' : 'AI thinking'}</span>
                 </motion.div>
               ) : openingName ? (
-                <motion.p
-                  key={openingName}
-                  initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                  className="text-xs text-muted-foreground font-serif italic tracking-wide truncate text-center"
-                >
+                <motion.p key={openingName} initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                  className="text-xs text-muted-foreground font-serif italic tracking-wide truncate text-center">
                   {openingName}
                 </motion.p>
               ) : null}
             </AnimatePresence>
           </div>
 
-          <Button
-            variant="ghost" size="sm"
-            className="text-muted-foreground hover:text-foreground gap-1.5 px-2"
-            onClick={() => setFlipped(f => !f)}
-            title="Flip board"
-          >
-            <span className="text-base font-bold">⇄</span>
-            <span className="hidden sm:inline">Flip</span>
-          </Button>
+          <div className="flex items-center gap-1">
+            {/* Spectator controls */}
+            {isAiVsAi && (
+              <>
+                {/* Pause / Resume */}
+                <Button variant="ghost" size="sm" className="px-2 text-muted-foreground hover:text-foreground"
+                  onClick={() => setIsPaused(p => !p)} title={isPaused ? 'Resume' : 'Pause'}>
+                  {isPaused ? '▶' : '⏸'}
+                </Button>
+                {/* Speed cycle */}
+                <Button variant="ghost" size="sm" className="px-2 text-muted-foreground hover:text-foreground"
+                  onClick={cycleSpeed} title="Cycle speed">
+                  <span className="text-base leading-none">{speedInfo.icon}</span>
+                  <span className="text-xs ml-1 hidden sm:inline">{speedInfo.label}</span>
+                </Button>
+                {/* Auto-flip toggle */}
+                <Button variant={autoFlip ? 'outline' : 'ghost'} size="sm"
+                  className="px-2 text-muted-foreground hover:text-foreground text-xs hidden sm:flex"
+                  onClick={() => setAutoFlip(f => !f)} title="Auto-flip board">
+                  ⇄ Auto
+                </Button>
+              </>
+            )}
+            <Button variant="ghost" size="sm"
+              className="text-muted-foreground hover:text-foreground gap-1.5 px-2"
+              onClick={() => setFlipped(f => !f)} title="Flip board">
+              <span className="text-base font-bold">⇄</span>
+              <span className="hidden sm:inline">Flip</span>
+            </Button>
+          </div>
         </div>
 
         {/* ── Main content ── */}
@@ -233,6 +274,23 @@ export default function Game() {
                 lastMove={lastMove ? { from: lastMove.from, to: lastMove.to } : null}
                 statusText={gameStatus}
               />
+
+              {/* Spectator overlay when paused */}
+              {isAiVsAi && isPaused && (
+                <motion.div
+                  initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+                  className="absolute inset-0 flex items-center justify-center rounded-2xl z-30"
+                  style={{ background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(4px)' }}
+                >
+                  <button
+                    onClick={() => setIsPaused(false)}
+                    className="flex flex-col items-center gap-2 cursor-pointer"
+                  >
+                    <span className="text-5xl">▶</span>
+                    <span className="text-sm text-white/70 tracking-widest uppercase">Resume</span>
+                  </button>
+                </motion.div>
+              )}
             </motion.div>
 
             <PlayerCard
@@ -244,25 +302,19 @@ export default function Game() {
               isActive={bottomPlayer.active && !gameIsOver}
             />
 
-            {/* Game controls */}
+            {/* Game controls — hidden in AI vs AI */}
+            {!isAiVsAi && (
             <div className="flex gap-2 mt-1">
-              <Button
-                variant="outline" size="sm"
-                className="flex-1 text-sm"
-                onClick={undoMove}
-                disabled={history.length === 0 || (mode === 'ai' && isThinking) || gameIsOver}
-              >
+              <Button variant="outline" size="sm" className="flex-1 text-sm"
+                onClick={undoMove} disabled={history.length === 0 || (mode === 'ai' && isThinking) || gameIsOver}>
                 ↩ Undo
               </Button>
-              <Button
-                variant="destructive" size="sm"
-                className="flex-1 text-sm"
-                onClick={() => setShowResign(true)}
-                disabled={gameIsOver || history.length === 0}
-              >
+              <Button variant="destructive" size="sm" className="flex-1 text-sm"
+                onClick={() => setShowResign(true)} disabled={gameIsOver || history.length === 0}>
                 🏳 Resign
               </Button>
             </div>
+            )}
           </div>
 
           {/* Right panel: eval bar + move history */}

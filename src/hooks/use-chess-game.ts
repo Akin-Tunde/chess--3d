@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { Chess, Move } from 'chess.js';
 import { getAIMove, AIDifficulty } from '@/lib/chess-ai';
 import { getOpeningName } from '@/lib/openings';
@@ -10,7 +10,7 @@ import {
   playPromotionSound,
 } from '@/lib/sounds';
 
-export type GameMode = 'ai' | 'local';
+export type GameMode = 'ai' | 'local' | 'aivai';
 
 function getSoundForMove(result: Move, inCheck: boolean) {
   if (result.flags?.includes('k') || result.flags?.includes('q')) {
@@ -35,17 +35,38 @@ export function getMoveSoundFlags(result: Move) {
   };
 }
 
-export function useChessGame(initialMode: GameMode = 'ai', difficulty: AIDifficulty = 'medium') {
+export interface UseChessGameOptions {
+  initialMode?: GameMode;
+  /** White/player difficulty (also used as the single AI in 'ai' mode) */
+  difficulty?: AIDifficulty;
+  /** Black AI difficulty — used only in 'aivai' mode */
+  difficulty2?: AIDifficulty;
+  /** Delay (ms) between AI moves in 'aivai' mode */
+  moveDelay?: number;
+}
+
+export function useChessGame({
+  initialMode = 'ai',
+  difficulty = 'medium',
+  difficulty2 = 'medium',
+  moveDelay = 700,
+}: UseChessGameOptions = {}) {
   const [chess] = useState(() => new Chess());
   const [fen, setFen] = useState(() => chess.fen());
   const [history, setHistory] = useState<Move[]>([]);
   const [mode, setMode] = useState<GameMode>(initialMode);
   const [aiDifficulty, setAiDifficulty] = useState<AIDifficulty>(difficulty);
+  const [aiDifficulty2, setAiDifficulty2] = useState<AIDifficulty>(difficulty2);
   const [isThinking, setIsThinking] = useState(false);
   const [playerColor, setPlayerColor] = useState<'w' | 'b'>('w');
   const [lastMove, setLastMove] = useState<Move | null>(null);
   const [gameStatus, setGameStatus] = useState<string>('');
   const [openingName, setOpeningName] = useState<string | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
+
+  // Use a ref so the AI timeout always reads the latest moveDelay
+  const moveDelayRef = useRef(moveDelay);
+  useEffect(() => { moveDelayRef.current = moveDelay; }, [moveDelay]);
 
   const updateState = useCallback(() => {
     const newFen = chess.fen();
@@ -95,6 +116,7 @@ export function useChessGame(initialMode: GameMode = 'ai', difficulty: AIDifficu
     setGameStatus('');
     setOpeningName(null);
     setIsThinking(false);
+    setIsPaused(false);
     updateState();
   }, [chess, updateState]);
 
@@ -104,7 +126,7 @@ export function useChessGame(initialMode: GameMode = 'ai', difficulty: AIDifficu
     updateState();
   }, [chess, mode, updateState]);
 
-  // AI move effect
+  // ── AI vs human effect ───────────────────────────────────────────────────
   useEffect(() => {
     if (mode !== 'ai' || chess.isGameOver() || chess.turn() === playerColor) {
       return undefined;
@@ -122,6 +144,25 @@ export function useChessGame(initialMode: GameMode = 'ai', difficulty: AIDifficu
     return () => clearTimeout(timer);
   }, [fen, mode, playerColor, aiDifficulty, chess, updateState]);
 
+  // ── AI vs AI effect ──────────────────────────────────────────────────────
+  useEffect(() => {
+    if (mode !== 'aivai' || chess.isGameOver() || isPaused) {
+      return undefined;
+    }
+    setIsThinking(true);
+    const timer = setTimeout(() => {
+      const currentDiff = chess.turn() === 'w' ? aiDifficulty : aiDifficulty2;
+      const aiMove = getAIMove(chess, currentDiff);
+      if (aiMove) {
+        const result = chess.move(aiMove);
+        updateState();
+        if (result) getSoundForMove(result, chess.inCheck());
+      }
+      setIsThinking(false);
+    }, moveDelayRef.current);
+    return () => clearTimeout(timer);
+  }, [fen, mode, isPaused, aiDifficulty, aiDifficulty2, chess, updateState]);
+
   return {
     chess,
     fen,
@@ -133,10 +174,14 @@ export function useChessGame(initialMode: GameMode = 'ai', difficulty: AIDifficu
     resetGame,
     undoMove,
     isThinking,
+    isPaused,
+    setIsPaused,
     mode,
     setMode,
     aiDifficulty,
     setAiDifficulty,
+    aiDifficulty2,
+    setAiDifficulty2,
     playerColor,
     setPlayerColor,
   };
